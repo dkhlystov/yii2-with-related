@@ -5,6 +5,7 @@ namespace dkhlystov\db;
 use Exception;
 use ReflectionClass;
 use yii\db\ActiveQueryInterface;
+use yii\helpers\ArrayHelper;
 use dkhlystov\forms\Form;
 
 /**
@@ -14,6 +15,50 @@ use dkhlystov\forms\Form;
  */
 class ActiveRecord extends \yii\db\ActiveRecord
 {
+
+    /**
+     * @var array
+     */
+    private static $_relationNames;
+
+    /**
+     * Get relation names
+     * @return array
+     */
+    private function getRelationNames()
+    {
+        if (self::$_relationNames !== null) {
+            return self::$_relationNames;
+        }
+        
+        $relationNames = [];
+        $reflector = new ReflectionClass(self::className());
+        $baseClassMethods = get_class_methods('yii\db\ActiveRecord');
+        $baseClassMethods[] = 'getRelationNames';
+        foreach ($reflector->getMethods() as $method) {
+            if (in_array($method->name, $baseClassMethods)) {
+                continue;
+            }
+            if (strpos($method->name, 'get') !== 0) {
+                continue;
+            }
+            $hasRequired = false;
+            foreach ($method->getParameters() as $param) {
+                if (!$param->isOptional()) {
+                    $hasRequired = true;
+                }
+            }
+            if ($hasRequired) {
+                continue;
+            }
+            $relation = call_user_func([$this, $method->name]);
+            if ($relation instanceof ActiveQueryInterface) {
+                $relationNames[] = lcfirst(substr($method->name, 3));
+            }
+        }
+
+        return self::$_relationNames = $relationNames;
+    }
 
     /**
      * @inheritdoc
@@ -27,12 +72,13 @@ class ActiveRecord extends \yii\db\ActiveRecord
         }
 
         // Check for relation
-        $relation = call_user_func(array($this,$methodName));
-        if (!($relation instanceof ActiveQueryInterface)) {
+        $relationName = lcfirst(substr($methodName, 3));
+        if (!in_array($relationName, $this->getRelationNames())) {
             return parent::__set($name, $value);
         }
 
         // Assign related
+        $relation = call_user_func([$this, $methodName]);
         if (is_array($this->$name)) {
             $this->assignMany($name, $value, $relation->modelClass);
         } else {
@@ -66,23 +112,36 @@ class ActiveRecord extends \yii\db\ActiveRecord
      */
     private function assignMany($name, $value, $class)
     {
+        // Old objects indexed by primary key
+        $old = [];
+        foreach ($this->$name as $item) {
+            // $pk = $item->getPrimaryKey(true);
+            $pk = array_map(function ($v) {return (string) $v;}, $item->getPrimaryKey(true));
+            $old[serialize($pk)] = $item;
+        }
+
+        // Primary key names
+        $pkNames = $class::primaryKey();
+
+        // Assign
         $objects = [];
         foreach ($value as $v) {
-            // Object
-            $object = new $class;
-            $this->assignObject($object, $v);
-
             // Primary key
-            $pkIsSet = true;
-            foreach ($object->getPrimaryKey(true) as $key => $value) {
-                if (empty($value)) {
-                    $pkIsSet = false;
-                    break;
+            $pk = [];
+            foreach ($pkNames as $pkName) {
+                $s = (string) ArrayHelper::getValue($v, $pkName, '');
+                if (!empty($s)) {
+                    $pk[$pkName] = $s;
                 }
             }
-            if ($pkIsSet) {
-                $object->setIsNewRecord(false);
+
+            // Object
+            if (!empty($pk) && array_key_exists($idx = serialize($pk), $old)) {
+                $object = $old[$idx];
+            } else {
+                $object = new $class;
             }
+            $this->assignObject($object, $v);
 
             $objects[] = $object;
         }
@@ -141,21 +200,7 @@ class ActiveRecord extends \yii\db\ActiveRecord
     public function saveWithRelatedInternal($runValidation = true, $attributeNames = null)
     {
         // Get relation names
-        $stack = [];
-        $reflector = new ReflectionClass(self::className());
-        $baseClassMethods = get_class_methods('yii\db\ActiveRecord');
-        foreach ($reflector->getMethods() as $method) {
-            if (in_array($method->name, $baseClassMethods)) {
-                continue;
-            }
-            if (strpos($method->name, 'get') !== 0) {
-                continue;
-            }
-            $relation = call_user_func(array($this,$method->name));
-            if ($relation instanceof ActiveQueryInterface) {
-                $stack[] = lcfirst(substr($method->name, 3));
-            }
-        }
+        $stack = $this->getRelationNames();
 
         // Prepare names
         $names = $attributeNames ? $attributeNames : [];
@@ -240,6 +285,7 @@ class ActiveRecord extends \yii\db\ActiveRecord
         };
 
         // Save
+        $success = true;
         foreach ($related as $object) {
             $pk = serialize($object->getPrimaryKey());
             if (array_key_exists($pk, $old)) {

@@ -44,14 +44,17 @@ class Form extends Model
     {
         if (array_key_exists($name, $this->_forms)) {
             if ($this->_config[$name]['type'] == self::HAS_ONE) {
-                $this->nestedFormSet($this->_forms[$name], $value);
+                $this->formSet($this->_forms[$name], $value);
             } else {
+                if (!is_array($value)) {
+                    $value = [];
+                }
                 $class = $this->_config[$name]['class'];
                 $forms = [];
                 foreach ($value as $key => $data) {
                     $form = new $class;
                     $form->formName = Html::getInputName($this, $name) . '[' . $key . ']';
-                    $this->nestedFormSet($form, $data);
+                    $this->formSet($form, $data);
                     $forms[$key] = $form;
                 }
                 $this->_forms[$name] = $forms;
@@ -64,31 +67,32 @@ class Form extends Model
     /**
      * @inheritdoc
      */
-    public function init()
+    public function __construct($config = [])
     {
-        parent::init();
-
         // Prepare config
-        $config = [];
-        foreach ($this->nestedForms() as $item) {
-            $config[$item[0]] = [
+        $c = [];
+        foreach ($this->forms() as $item) {
+            $c[$item[0]] = [
                 'type' => $item[1],
                 'class' => $item[2],
             ];
         }
-        $this->_config = $config;
+        $this->_config = $c;
 
         // Init nested forms
         $forms = [];
-        foreach ($this->_config as $attribute => $config) {
-            if ($config['type'] == self::HAS_ONE) {
-                $forms[$attribute] = new $config['class'];
+        foreach ($this->_config as $attribute => $c) {
+            if ($c['type'] == self::HAS_ONE) {
+                $forms[$attribute] = new $c['class'];
                 $forms[$attribute]->formName = Html::getInputName($this, $attribute);
-            } elseif ($config['type'] == self::HAS_MANY) {
+            } elseif ($c['type'] == self::HAS_MANY) {
                 $forms[$attribute] = [];
             }
         }
         $this->_forms = $forms;
+
+        // Inherit
+        parent::__construct($config);
     }
 
     /**
@@ -117,7 +121,7 @@ class Form extends Model
      * relation_type = 'one'|'many'
      * @return array
      */
-    public function nestedForms()
+    public function forms()
     {
         return [];
     }
@@ -154,7 +158,7 @@ class Form extends Model
      * @param ActiveRecord|array $data 
      * @return void
      */
-    private function nestedFormSet(Form $form, $data)
+    private function formSet(Form $form, $data)
     {
         if ($data instanceof ActiveRecord) {
             $form->assign($data);
