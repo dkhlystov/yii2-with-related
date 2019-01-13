@@ -2,9 +2,11 @@
 
 namespace dkhlystov\forms;
 
+use ArrayObject;
 use yii\base\Model;
 use yii\db\ActiveRecord;
 use yii\helpers\Html;
+use yii\validators\Validator;
 use dkhlystov\validators\FormValidator;
 
 class Form extends Model
@@ -34,7 +36,13 @@ class Form extends Model
      */
     public function __get($name)
     {
-        return array_key_exists($name, $this->_forms) ? $this->_forms[$name] : parent::__get($name);
+        // Inherit
+        if (!array_key_exists($name, $this->_forms)) {
+            return parent::__get($name);
+        }
+
+        // Forms
+        return $this->_forms[$name];
     }
 
     /**
@@ -42,26 +50,31 @@ class Form extends Model
      */
     public function __set($name, $value)
     {
-        if (array_key_exists($name, $this->_forms)) {
-            if ($this->_config[$name]['type'] == self::HAS_ONE) {
-                $this->formSet($this->_forms[$name], $value);
-            } else {
-                if (!is_array($value)) {
-                    $value = [];
-                }
-                $class = $this->_config[$name]['class'];
-                $forms = [];
-                foreach ($value as $key => $data) {
-                    $form = new $class;
-                    $form->formName = Html::getInputName($this, $name) . '[' . $key . ']';
-                    $this->formSet($form, $data);
-                    $forms[$key] = $form;
-                }
-                $this->_forms[$name] = $forms;
-            }
-        } else {
+        // Inherit
+        if (!array_key_exists($name, $this->_forms)) {
             parent::__set($name, $value);
+            return;
         }
+
+        // One
+        if ($this->_config[$name]['type'] == self::HAS_ONE) {
+            $this->formSet($this->_forms[$name], $value);
+            return;
+        }
+
+        // Many
+        if (!is_array($value)) {
+            $value = [];
+        }
+        $class = $this->_config[$name]['class'];
+        $forms = [];
+        foreach ($value as $key => $data) {
+            $form = new $class;
+            $form->formName = Html::getInputName($this, $name) . '[' . $key . ']';
+            $this->formSet($form, $data);
+            $forms[$key] = $form;
+        }
+        $this->_forms[$name] = $forms;
     }
 
     /**
@@ -98,13 +111,27 @@ class Form extends Model
     /**
      * @inheritdoc
      */
-    public function rules()
+    public function createValidators()
     {
-        $rules = [];
+        // Create nested forms validators
+        $rules = $this->rules();
         foreach ($this->_config as $attribute => $config) {
-            $rules[] = [$attribute, FormValidator::classNAme(), 'type' => $config['type']];
+            $rules[] = [$attribute, FormValidator::className(), 'type' => $config['type']];
         }
-        return $rules;
+
+        // Inherit
+        $validators = new ArrayObject();
+        foreach ($rules as $rule) {
+            if ($rule instanceof Validator) {
+                $validators->append($rule);
+            } elseif (is_array($rule) && isset($rule[0], $rule[1])) { // attributes, validator type
+                $validator = Validator::createValidator($rule[1], $this, (array) $rule[0], array_slice($rule, 2));
+                $validators->append($validator);
+            } else {
+                throw new InvalidConfigException('Invalid validation rule: a rule must specify both attribute names and validator type.');
+            }
+        }
+        return $validators;
     }
 
     /**
@@ -131,7 +158,7 @@ class Form extends Model
      * @param ActiveRecord $object 
      * @return void
      */
-    public function assign($object)
+    public function assignFrom($object)
     {
         $this->setAttributes($object->getAttributes());
         foreach ($this->_config as $attribute => $_config) {
@@ -161,7 +188,7 @@ class Form extends Model
     private function formSet(Form $form, $data)
     {
         if ($data instanceof ActiveRecord) {
-            $form->assign($data);
+            $form->assignFrom($data);
         } elseif (is_array($data)) {
             $form->setAttributes($data);
         }

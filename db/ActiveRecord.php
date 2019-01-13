@@ -12,6 +12,7 @@ use dkhlystov\forms\Form;
  * Extended [[yii\db\ActiveRecord]]
  * Can set relations with Array or [[dkhlystov\forms\Form]] data
  * Can save with relations
+ * Can delete with relations
  */
 class ActiveRecord extends \yii\db\ActiveRecord
 {
@@ -171,6 +172,8 @@ class ActiveRecord extends \yii\db\ActiveRecord
      */
     public function saveWithRelated($runValidation = true, $attributeNames = null)
     {
+        $success = false;
+
         // Save with transaction
         $transaction = self::getDb()->beginTransaction();
         try {
@@ -337,6 +340,85 @@ class ActiveRecord extends \yii\db\ActiveRecord
                 $related->$fk = $this->$pk;
             }
         }
+    }
+
+    /**
+     * Delete with relations using transaction
+     * @param array $relationNames 
+     * @return integer|false
+     */
+    public function deleteWithRelated($relationNames)
+    {
+        $success = false;
+
+        // Delete with transaction
+        $transaction = self::getDb()->beginTransaction();
+        try {
+            $success = $this->deleteWithRelatedInternal($relationNames);
+        } catch (Exception $e) {
+            $transaction->rollBack();
+            throw $e;
+        }
+
+        // Transaction process
+        if ($success) {
+            $transaction->commit();
+        } else {
+            $transaction->rollBack();
+        }
+
+        // Return
+        return $success;
+    }
+
+    /**
+     * Delete with relations
+     * @param array $relationNames 
+     * @return integer|false
+     */
+    public function deleteWithRelatedInternal($relationNames)
+    {
+        // Get relation names
+        $stack = $this->getRelationNames();
+
+        // Prepare names
+        $names = $relationNames ? $relationNames : [];
+        $relationNames = [];
+        foreach ($names as $key => $value) {
+            if (is_array($value)) {
+                $relationNames[$key] = $value;
+            } elseif (in_array($value, $stack)) {
+                $relationNames[$value] = [];
+            }
+        }
+
+        // Delete related
+        $success = true;
+        $stack = array_intersect($stack, array_keys($relationNames));
+        foreach ($stack as $relationName) {
+            $related = $this->$relationName;
+            $names = empty($relationNames[$relationName]) ? [] : $relationNames[$relationName];
+            if (!is_array($related)) {
+                $related = [$related];
+            }
+            foreach ($related as $object) {
+                if ($object->hasMethod('deleteWithRelatedInternal')) {
+                    $success = $object->deleteWithRelatedInternal($names);
+                } else {
+                    $success = $object->delete();
+                }
+            }
+            if ($success === false) {
+                break;
+            }
+        }
+
+        // Delete object
+        if ($success) {
+            $success = $this->delete();
+        }
+
+        return $success;
     }
 
 }
